@@ -1,0 +1,250 @@
+:root {
+  --ink: #10231f;
+  --ink-soft: #2f4a44;
+  --muted: #6a7f79;
+  --accent: #1e7a5d;
+  --accent-strong: #155a45;
+  --surface: #f7f4f0;
+  --surface-strong: #ffffff;
+  --border: #d9d2c9;
+  --shadow: 0 24px 60px rgba(16, 35, 31, 0.12);
+  --radius: 18px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, #f0ebe4 0%, transparent 40%),
+    radial-gradient(circle at 30% 20%, #e4f0eb 0%, transparent 45%),
+    linear-gradient(180deg, #f9f6f1 0%, #f1eee9 100%);
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--ink);
+  color: #f6f2ed;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.brand-title {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.brand-subtitle {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.status {
+  font-size: 14px;
+  color: var(--accent);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid #c9e0d8;
+  background: #e7f5f0;
+}
+
+.layout {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.panel {
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+}
+
+.intro h1 {
+  font-size: 34px;
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.intro p {
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.prompt-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.prompt {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.prompt:hover {
+  transform: translateY(-2px);
+  border-color: #b8c7c1;
+}
+
+.tips {
+  margin-top: 24px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.tip {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f1f7f4;
+  border: 1px dashed #cfe1d9;
+}
+
+.tip span {
+  font-weight: 600;
+  color: var(--accent-strong);
+  margin-right: 6px;
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-window {
+  flex: 1;
+  min-height: 360px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.message {
+  display: flex;
+  margin-bottom: 12px;
+}
+
+.message.user {
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+}
+
+.message.user .bubble {
+  background: var(--ink);
+  color: #f4f0eb;
+  border-color: var(--ink);
+}
+
+.choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice {
+  border: 1px solid #c9d8d2;
+  background: #f2f8f5;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.choice:hover {
+  border-color: #9db8ae;
+}
+
+.chat-input {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+}
+
+.chat-input input {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.chat-input button {
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.chat-input button:hover {
+  background: var(--accent-strong);
+}
+
+@media (max-width: 800px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .panel {
+    padding: 20px;
+  }
+
+  .intro h1 {
+    font-size: 28px;
+  }
+}

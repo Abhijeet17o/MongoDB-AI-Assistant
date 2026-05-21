@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Mongo Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">AI</div>
+          <div class="brand-text">
+            <div class="brand-title">Mongo Assistant</div>
+            <div class="brand-subtitle">Natural language to database answers</div>
+          </div>
+        </div>
+        <div class="status" id="status">Ready</div>
+      </header>
+
+      <main class="layout">
+        <section class="panel intro">
+          <h1>Ask questions in plain language.</h1>
+          <p>
+            The assistant interprets your request, plans a MongoDB query, and returns
+            results with a clear summary.
+          </p>
+          <div class="prompt-list">
+            <button class="prompt" data-prompt="How many customers do we have?">
+              How many customers do we have?
+            </button>
+            <button class="prompt" data-prompt="Show total sales last month.">
+              Show total sales last month.
+            </button>
+            <button class="prompt" data-prompt="Which product sold the most?">
+              Which product sold the most?
+            </button>
+          </div>
+          <div class="tips">
+            <div class="tip">
+              <span>Tip</span>
+              If your question is unclear, the assistant will ask for clarification.
+            </div>
+          </div>
+        </section>
+
+        <section class="panel chat">
+          <div class="chat-window" id="chatWindow">
+            <div class="message assistant">
+              <div class="bubble">
+                Hi! Ask me about the data and I will query MongoDB for you.
+              </div>
+            </div>
+          </div>
+          <form id="chatForm" class="chat-input">
+            <input
+              id="questionInput"
+              type="text"
+              name="question"
+              placeholder="Type your question"
+              autocomplete="off"
+              required
+            />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
