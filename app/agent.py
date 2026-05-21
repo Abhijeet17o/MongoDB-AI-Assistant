@@ -19,11 +19,16 @@ class QueryPlan(BaseModel):
     action: Literal["count", "sum", "top", "find", "clarify", "unknown"] = "unknown"
     collection: Optional[str] = None
     filter: Optional[Dict[str, Any]] = None
+    fields: Optional[List[str]] = None
     field: Optional[str] = None
     group_by: Optional[str] = None
     sort: Optional[Dict[str, int]] = None
     limit: Optional[int] = Field(default=None, ge=1, le=100)
     clarification_question: Optional[str] = None
+
+
+class MultiQueryPlan(BaseModel):
+    plans: List[QueryPlan] = Field(default_factory=list)
 
 
 def _render_prompt(schema_snapshot: Dict[str, Any], question: str, parser: PydanticOutputParser) -> str:
@@ -38,6 +43,39 @@ def _render_prompt(schema_snapshot: Dict[str, Any], question: str, parser: Pydan
         "- Keep limit <= 100.\n"
         "- If preferred_collection is provided, use it. Otherwise use primary_collection.\n"
         "- Use first_word as a fallback field when a field is needed.\n"
+        "- If the user asks for specific fields (e.g., title and plot), set fields accordingly.\n"
+        "- Use fields_by_collection to choose valid fields.\n"
+        "{format_instructions}"
+    )
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system),
+            ("human", "Question: {question}"),
+        ]
+    )
+    rendered = prompt.format_messages(
+        question=question,
+        schema_snapshot=json.dumps(schema_snapshot, ensure_ascii=True),
+        format_instructions=parser.get_format_instructions(),
+    )
+    return "\n\n".join(f"{msg.type.upper()}: {msg.content}" for msg in rendered)
+
+
+def _render_multi_prompt(
+    schema_snapshot: Dict[str, Any],
+    question: str,
+    parser: PydanticOutputParser,
+) -> str:
+    system = (
+        "You are a MongoDB query planner for an AI assistant. "
+        "If the question asks for multiple things, return multiple plans in order. "
+        "If it is a single request, return a single plan.\n"
+        "Schema snapshot: {schema_snapshot}\n"
+        "Rules:\n"
+        "- Use ONLY the collections listed in schema.\n"
+        "- Use fields_by_collection to choose valid fields.\n"
+        "- Keep limit <= 100.\n"
+        "- Return a JSON object matching the provided schema.\n"
         "{format_instructions}"
     )
     prompt = ChatPromptTemplate.from_messages(
@@ -138,6 +176,36 @@ def _needs_refinement(plan: QueryPlan, result: Dict[str, Any]) -> Tuple[bool, st
     return False, ""
 
 
+def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> Tuple[QueryPlan, Optional[str]]:
+    fields_by_collection = schema_snapshot.get("fields_by_collection") or {}
+    if not plan.collection:
+        return plan, None
+    collection_fields = fields_by_collection.get(plan.collection)
+    if not collection_fields:
+        return plan, None
+
+    issues: List[str] = []
+    if plan.fields:
+        valid_fields = [field for field in plan.fields if field in collection_fields]
+        if not valid_fields:
+            issues.append("Requested fields are not available in the collection.")
+        else:
+            plan.fields = valid_fields
+
+    if plan.field and plan.field not in collection_fields:
+        issues.append("Requested field is not available in the collection.")
+
+    if plan.group_by and plan.group_by not in collection_fields:
+        issues.append("Requested group_by field is not available in the collection.")
+
+    if issues:
+        available = ", ".join(collection_fields[:15])
+        issue_text = " ".join(issues) + f" Available fields include: {available}."
+        return plan, issue_text
+
+    return plan, None
+
+
 def _normalize_plan(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> QueryPlan:
     if plan.limit is None:
         plan.limit = 20
@@ -161,6 +229,18 @@ def _normalize_plan(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> QueryPl
 
     if plan.action == "top" and not plan.group_by:
         plan.group_by = schema_snapshot.get("primary_field") or schema_snapshot.get("first_word")
+
+    if plan.fields:
+        cleaned: List[str] = []
+        for field in plan.fields:
+            if not field:
+                continue
+            field_name = field.strip()
+            if not field_name:
+                continue
+            if field_name not in cleaned:
+                cleaned.append(field_name)
+        plan.fields = cleaned or None
 
     return plan
 
@@ -237,9 +317,26 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
             return {"items": result}
 
         if plan.action == "find":
-            cursor = collection.find(filter_doc).limit(plan.limit)
+            projection = None
+            if plan.fields:
+                projection = {field: 1 for field in plan.fields}
+                if "_id" not in projection:
+                    projection["_id"] = 0
+            cursor = collection.find(filter_doc, projection).limit(plan.limit)
             docs = [_serialize_value(doc) for doc in cursor]
             safe_docs = [_redact_doc(doc) for doc in docs if isinstance(doc, dict)]
+            if plan.fields:
+                if len(plan.fields) == 1:
+                    display_field = plan.fields[0]
+                    values = [doc.get(display_field) for doc in safe_docs if doc.get(display_field)]
+                    values = [str(value) for value in values if str(value).strip()]
+                    return {
+                        "items": [{"value": value} for value in values],
+                        "display_field": display_field,
+                        "count": len(safe_docs),
+                    }
+                return {"items": safe_docs, "count": len(safe_docs)}
+
             display_field = _pick_display_field(safe_docs)
             if display_field:
                 values = [doc.get(display_field) for doc in safe_docs if doc.get(display_field)]
@@ -278,7 +375,11 @@ def _format_response(plan: QueryPlan, result: Dict[str, Any]) -> str:
         if not items:
             return "No results found."
         count = result.get("count", len(items))
+        fields = plan.fields or []
         field = result.get("display_field")
+        if fields:
+            fields_label = ", ".join(fields)
+            return f"Found {count} documents. Showing fields: {fields_label}."
         if field:
             values = [item.get("value") for item in items if item.get("value")]
             preview = ", ".join(values[:10]) if values else ""
@@ -302,50 +403,112 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     if preferred:
         schema_snapshot = {**schema_snapshot, "preferred_collection": preferred}
 
+    plans: List[QueryPlan] = []
     try:
-        parser = PydanticOutputParser(pydantic_object=QueryPlan)
-        prompt = _render_prompt(schema_snapshot, question, parser)
+        parser = PydanticOutputParser(pydantic_object=MultiQueryPlan)
+        prompt = _render_multi_prompt(schema_snapshot, question, parser)
         raw = _call_llm(prompt)
-        plan = parser.parse(raw)
+        multi = parser.parse(raw)
+        plans = multi.plans
     except Exception:
-        plan = QueryPlan(
-            action="clarify",
-            clarification_question="I could not parse that. Can you rephrase or be more specific?",
-        )
+        plans = []
 
-    plan = _normalize_plan(plan, schema_snapshot)
-
-    if plan.action in {"clarify", "unknown"}:
-        return {
-            "answer": plan.clarification_question or "Can you clarify your request?",
-            "needs_clarification": True,
-            "choices": _build_collection_choices(collections, preferred),
-            "data": {"plan": plan.model_dump()},
-        }
-
-    result = _execute_plan(plan)
-    needs_retry, issue = _needs_refinement(plan, result)
-    if needs_retry:
+    if not plans:
         try:
             parser = PydanticOutputParser(pydantic_object=QueryPlan)
-            prompt = _render_refine_prompt(
-                schema_snapshot,
-                question,
-                parser,
-                plan.model_dump(),
-                issue,
-            )
+            prompt = _render_prompt(schema_snapshot, question, parser)
             raw = _call_llm(prompt)
-            refined_plan = parser.parse(raw)
-            refined_plan = _normalize_plan(refined_plan, schema_snapshot)
-            refined_result = _execute_plan(refined_plan)
-            if "error" not in refined_result:
-                plan = refined_plan
-                result = refined_result
+            plan = parser.parse(raw)
+            plans = [plan]
         except Exception:
-            pass
+            plans = [
+                QueryPlan(
+                    action="clarify",
+                    clarification_question="I could not parse that. Can you rephrase or be more specific?",
+                )
+            ]
+
+    responses: List[str] = []
+    results_payload: List[Dict[str, Any]] = []
+
+    for plan in plans:
+        plan = _normalize_plan(plan, schema_snapshot)
+        plan, validation_issue = _validate_plan_fields(plan, schema_snapshot)
+        if validation_issue:
+            try:
+                parser = PydanticOutputParser(pydantic_object=QueryPlan)
+                prompt = _render_refine_prompt(
+                    schema_snapshot,
+                    question,
+                    parser,
+                    plan.model_dump(),
+                    validation_issue,
+                )
+                raw = _call_llm(prompt)
+                refined_plan = parser.parse(raw)
+                refined_plan = _normalize_plan(refined_plan, schema_snapshot)
+                refined_plan, _ = _validate_plan_fields(refined_plan, schema_snapshot)
+                plan = refined_plan
+            except Exception:
+                pass
+
+        if plan.action in {"clarify", "unknown"}:
+            return {
+                "answer": plan.clarification_question or "Can you clarify your request?",
+                "needs_clarification": True,
+                "choices": _build_collection_choices(collections, preferred),
+                "data": {"plan": plan.model_dump()},
+            }
+
+        result = _execute_plan(plan)
+        needs_retry, issue = _needs_refinement(plan, result)
+        if needs_retry:
+            try:
+                parser = PydanticOutputParser(pydantic_object=QueryPlan)
+                prompt = _render_refine_prompt(
+                    schema_snapshot,
+                    question,
+                    parser,
+                    plan.model_dump(),
+                    issue,
+                )
+                raw = _call_llm(prompt)
+                refined_plan = parser.parse(raw)
+                refined_plan = _normalize_plan(refined_plan, schema_snapshot)
+                refined_result = _execute_plan(refined_plan)
+                if "error" not in refined_result:
+                    plan = refined_plan
+                    result = refined_result
+            except Exception:
+                pass
+
+        responses.append(_format_response(plan, result))
+
+        items = result.get("items") or []
+        if plan.action in {"count", "sum"}:
+            value = result.get("count") if plan.action == "count" else result.get("total")
+            items = [{"value": value}]
+
+        label = plan.action
+        if plan.fields:
+            label = f"{plan.action}: {', '.join(plan.fields)}"
+
+        results_payload.append(
+            {
+                "label": label,
+                "items": items,
+            }
+        )
+
+    if len(responses) == 1:
+        answer = responses[0]
+    else:
+        answer = "Here is what I found:\n" + "\n".join(
+            f"{index + 1}. {response}" for index, response in enumerate(responses)
+        )
+
     return {
-        "answer": _format_response(plan, result),
+        "answer": answer,
         "needs_clarification": False,
-        "data": {"plan": plan.model_dump(), "result": result},
+        "data": {"plans": [plan.model_dump() for plan in plans], "results": results_payload},
     }

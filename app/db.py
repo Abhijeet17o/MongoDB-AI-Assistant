@@ -46,6 +46,7 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
         "primary_collection": None,
         "primary_field": None,
         "first_word": "",
+        "fields_by_collection": {},
         "error": None,
     }
 
@@ -55,6 +56,14 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
         collections = db.list_collection_names()
         collections.sort()
         snapshot["collections"] = collections
+        fields_by_collection: Dict[str, list[str]] = {}
+        for name in collections:
+            sample = db[name].find_one()
+            if sample:
+                fields_by_collection[name] = list(sample.keys())
+            else:
+                fields_by_collection[name] = []
+        snapshot["fields_by_collection"] = fields_by_collection
         if collections:
             primary = collections[0]
             snapshot["primary_collection"] = primary

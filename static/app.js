@@ -34,49 +34,59 @@ const formatValue = (value) => {
   return String(value);
 };
 
-const appendDetails = (bubble, items = []) => {
-  if (!Array.isArray(items) || items.length === 0) return;
+const appendDetails = (bubble, sections = []) => {
+  if (!Array.isArray(sections) || sections.length === 0) return;
   const details = document.createElement("details");
   details.className = "details";
   const summary = document.createElement("summary");
   summary.className = "details-title";
   summary.textContent = "Details";
-  const list = document.createElement("ul");
-  list.className = "details-list";
+  sections.forEach((section, sectionIndex) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "details-section";
+    const title = document.createElement("div");
+    title.className = "details-section-title";
+    title.textContent = section.title || `Section ${sectionIndex + 1}`;
+    const list = document.createElement("ul");
+    list.className = "details-list";
 
-  items.forEach((item, index) => {
-    const listItem = document.createElement("li");
-    listItem.className = "details-item";
+    (section.items || []).forEach((item, index) => {
+      const listItem = document.createElement("li");
+      listItem.className = "details-item";
 
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      const keys = Object.keys(item);
-      if (keys.length === 1 && keys[0] === "value") {
-        listItem.textContent = formatValue(item.value);
-      } else if (Object.prototype.hasOwnProperty.call(item, "_id") && Object.prototype.hasOwnProperty.call(item, "total")) {
-        listItem.textContent = `${formatValue(item._id)}: ${formatValue(item.total)}`;
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const keys = Object.keys(item);
+        if (keys.length === 1 && keys[0] === "value") {
+          listItem.textContent = formatValue(item.value);
+        } else if (Object.prototype.hasOwnProperty.call(item, "_id") && Object.prototype.hasOwnProperty.call(item, "total")) {
+          listItem.textContent = `${formatValue(item._id)}: ${formatValue(item.total)}`;
+        } else {
+          const heading = document.createElement("div");
+          heading.className = "details-heading";
+          heading.textContent = `Item ${index + 1}`;
+          const sublist = document.createElement("ul");
+          sublist.className = "details-sublist";
+          keys.forEach((key) => {
+            const entry = document.createElement("li");
+            entry.textContent = `${key}: ${formatValue(item[key])}`;
+            sublist.appendChild(entry);
+          });
+          listItem.appendChild(heading);
+          listItem.appendChild(sublist);
+        }
       } else {
-        const heading = document.createElement("div");
-        heading.className = "details-heading";
-        heading.textContent = `Item ${index + 1}`;
-        const sublist = document.createElement("ul");
-        sublist.className = "details-sublist";
-        keys.forEach((key) => {
-          const entry = document.createElement("li");
-          entry.textContent = `${key}: ${formatValue(item[key])}`;
-          sublist.appendChild(entry);
-        });
-        listItem.appendChild(heading);
-        listItem.appendChild(sublist);
+        listItem.textContent = formatValue(item);
       }
-    } else {
-      listItem.textContent = formatValue(item);
-    }
 
-    list.appendChild(listItem);
+      list.appendChild(listItem);
+    });
+
+    wrapper.appendChild(title);
+    wrapper.appendChild(list);
+    details.appendChild(wrapper);
   });
 
   details.appendChild(summary);
-  details.appendChild(list);
   bubble.appendChild(details);
 };
 
@@ -106,8 +116,18 @@ const sendQuestion = async (question, options = {}) => {
 
     const data = await response.json();
     const bubble = addMessage("assistant", data.answer || "No response.");
-    const items = data.data?.result?.items || [];
-    appendDetails(bubble, items);
+    const results = data.data?.results || [];
+    const sections = results.map((result) => ({
+      title: result.label || "Results",
+      items: result.items || [],
+    }));
+    if (!sections.length && Array.isArray(data.data?.result?.items)) {
+      sections.push({
+        title: "Results",
+        items: data.data.result.items,
+      });
+    }
+    appendDetails(bubble, sections);
     if (Array.isArray(data.choices) && data.choices.length) {
       const choices = document.createElement("div");
       choices.className = "choice-list";

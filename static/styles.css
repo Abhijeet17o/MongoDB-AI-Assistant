@@ -234,6 +234,16 @@ body {
   margin-bottom: 6px;
 }
 
+.details-section {
+  margin-top: 10px;
+}
+
+.details-section-title {
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
 .chat-input {
   display: grid;
   grid-template-columns: 1fr auto;
