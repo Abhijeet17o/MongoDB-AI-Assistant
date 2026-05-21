@@ -204,6 +204,36 @@ body {
   border-color: #9db8ae;
 }
 
+.details {
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+  color: var(--ink-soft);
+}
+
+.details-title {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.details-list,
+.details-sublist {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.details-item {
+  color: var(--ink-soft);
+}
+
+.details-heading {
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
 .chat-input {
   display: grid;
   grid-template-columns: 1fr auto;
