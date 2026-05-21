@@ -53,7 +53,19 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
     try:
         db = get_default_db()
         snapshot["default_db"] = db.name
-        collections = db.list_collection_names()
+        # Use listCollections to avoid system collections (system.views can be restricted).
+        collections: list[str] = []
+        try:
+            res = db.command(
+                {"listCollections": 1, "nameOnly": True, "authorizedCollections": True}
+            )
+            batch = res.get("cursor", {}).get("firstBatch", [])
+            collections = [item.get("name") for item in batch if item.get("name")]
+        except PyMongoError:
+            # Fallback to list_collection_names if listCollections is not allowed.
+            collections = db.list_collection_names()
+
+        collections = [name for name in collections if not name.startswith("system.")]
         collections.sort()
         snapshot["collections"] = collections
         fields_by_collection: Dict[str, list[str]] = {}
