@@ -31,7 +31,8 @@ A simple AI chat application that uses LangChain to interpret natural language q
 
 ## Render deployment
 Use a single FastAPI service:
-- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- If Render is not honoring `runtime.txt`, deploy using the Dockerfile (Python 3.11).
+- Start command (non-Docker): `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Env vars: `MONGODB_URI`, `LLM_API_KEY`, `LLM_MODEL`
 
 ## Notes on MongoDB access
