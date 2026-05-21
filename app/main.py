@@ -36,12 +36,19 @@ class ChatResponse(BaseModel):
 
 @app.on_event("startup")
 def warm_schema_cache() -> None:
-    get_schema_snapshot(force_refresh=True)
+    snapshot = get_schema_snapshot(force_refresh=True)
+    if snapshot.get("error"):
+        print(f"[startup] MongoDB connection error: {snapshot['error']}")
 
 
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+def health_db() -> dict:
+    return get_schema_snapshot(force_refresh=True)
 
 
 @app.get("/")
