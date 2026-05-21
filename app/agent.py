@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from bson import ObjectId
@@ -13,6 +14,51 @@ from pymongo.errors import PyMongoError
 
 from .config import require_settings
 from .db import get_default_db, get_schema_snapshot
+
+DATE_PATTERN = re.compile(
+    r'^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$'
+)
+
+def parse_date_string(val: str) -> Optional[dt.datetime]:
+    if not isinstance(val, str):
+        return None
+    val_strip = val.strip()
+    if not DATE_PATTERN.match(val_strip):
+        if val_strip.startswith("ISODate(") and val_strip.endswith(")"):
+            inner = val_strip[8:-1].strip("'\"")
+            return parse_date_string(inner)
+        return None
+    try:
+        iso_val = val_strip.replace("Z", "+00:00")
+        return dt.datetime.fromisoformat(iso_val)
+    except ValueError:
+        pass
+    try:
+        return dt.datetime.strptime(val_strip, "%Y-%m-%d")
+    except ValueError:
+        pass
+    try:
+        return dt.datetime.strptime(val_strip, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    try:
+        return dt.datetime.strptime(val_strip, "%Y/%m/%d")
+    except ValueError:
+        pass
+    return None
+
+def convert_dates_in_filter(filter_obj: Any) -> Any:
+    if isinstance(filter_obj, dict):
+        return {k: convert_dates_in_filter(v) for k, v in filter_obj.items()}
+    elif isinstance(filter_obj, list):
+        return [convert_dates_in_filter(item) for item in filter_obj]
+    elif isinstance(filter_obj, str):
+        parsed = parse_date_string(filter_obj)
+        if parsed is not None:
+            return parsed
+        return filter_obj
+    else:
+        return filter_obj
 
 
 class QueryPlan(BaseModel):
@@ -45,6 +91,12 @@ def _render_prompt(schema_snapshot: Dict[str, Any], question: str, parser: Pydan
         "- Use first_word as a fallback field when a field is needed.\n"
         "- If the user asks for specific fields (e.g., title and plot), set fields accordingly.\n"
         "- Use fields_by_collection to choose valid fields.\n"
+        "- Time context: The current real-world year is 2024. The database is actively updated.\n"
+        "- Important: When planning queries with relative date filters (e.g., 'last month', 'this year', 'today'), assume the current date/time is 2024-03-01T00:00:00Z. For example:\n"
+        "  - 'last month' means February 2024 (gte: '2024-02-01T00:00:00Z', lt: '2024-03-01T00:00:00Z')\n"
+        "  - 'this year' or 'last year' should be relative to 2024.\n"
+        "  - Generate dates as standard ISO 8601 strings (e.g. '2024-02-01T00:00:00Z').\n"
+        "  - Always use lowercase strings for enum-like fields (e.g. use 'sales' instead of 'Sales', 'customer' instead of 'Customer').\n"
         "{format_instructions}"
     )
     prompt = ChatPromptTemplate.from_messages(
@@ -76,6 +128,12 @@ def _render_multi_prompt(
         "- Use fields_by_collection to choose valid fields.\n"
         "- Keep limit <= 100.\n"
         "- Return a JSON object matching the provided schema.\n"
+        "- Time context: The current real-world year is 2024. The database is actively updated.\n"
+        "- Important: When planning queries with relative date filters (e.g., 'last month', 'this year', 'today'), assume the current date/time is 2024-03-01T00:00:00Z. For example:\n"
+        "  - 'last month' means February 2024 (gte: '2024-02-01T00:00:00Z', lt: '2024-03-01T00:00:00Z')\n"
+        "  - 'this year' or 'last year' should be relative to 2024.\n"
+        "  - Generate dates as standard ISO 8601 strings (e.g. '2024-02-01T00:00:00Z').\n"
+        "  - Always use lowercase strings for enum-like fields (e.g. use 'sales' instead of 'Sales', 'customer' instead of 'Customer').\n"
         "{format_instructions}"
     )
     prompt = ChatPromptTemplate.from_messages(
@@ -110,6 +168,12 @@ def _render_refine_prompt(
         "- Use ONLY the collections listed in schema.\n"
         "- Keep limit <= 100.\n"
         "- Return a JSON object matching the provided schema.\n"
+        "- Time context: The current real-world year is 2024. The database is actively updated.\n"
+        "- Important: When planning queries with relative date filters (e.g., 'last month', 'this year', 'today'), assume the current date/time is 2024-03-01T00:00:00Z. For example:\n"
+        "  - 'last month' means February 2024 (gte: '2024-02-01T00:00:00Z', lt: '2024-03-01T00:00:00Z')\n"
+        "  - 'this year' or 'last year' should be relative to 2024.\n"
+        "  - Generate dates as standard ISO 8601 strings (e.g. '2024-02-01T00:00:00Z').\n"
+        "  - Always use lowercase strings for enum-like fields (e.g. use 'sales' instead of 'Sales', 'customer' instead of 'Customer').\n"
         "{format_instructions}"
     )
     prompt = ChatPromptTemplate.from_messages(
@@ -139,11 +203,18 @@ def _call_llm(prompt: str) -> str:
 def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
     question_lower = question.lower()
     mapping = {
-        "users": ["customer", "customers", "user", "users", "subscriber", "account"],
+        "Business": ["customer", "customers", "client", "business", "businesses"],
+        "ItemSummary": ["sold the most", "top selling", "sold product", "product sold"],
+        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "voucher", "vouchers"],
+        "Item": ["product", "products", "item", "items"],
+        "customers": ["customer", "customers"],
+        "users": ["user", "users", "subscriber", "account"],
         "movies": ["movie", "movies", "film", "films", "title"],
         "comments": ["comment", "comments", "review", "reviews"],
         "sessions": ["session", "sessions", "login", "activity"],
         "theaters": ["theater", "theaters", "cinema", "venue"],
+        "sales": ["sale", "sales", "transaction", "transactions", "sold", "sell"],
+        "products": ["product", "products", "item", "items"],
     }
 
     for collection, keywords in mapping.items():
@@ -193,10 +264,12 @@ def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> T
             plan.fields = valid_fields
 
     if plan.field and plan.field not in collection_fields:
-        issues.append("Requested field is not available in the collection.")
+        if not (plan.collection == "sales" and plan.field.startswith("items.")):
+            issues.append("Requested field is not available in the collection.")
 
     if plan.group_by and plan.group_by not in collection_fields:
-        issues.append("Requested group_by field is not available in the collection.")
+        if not (plan.collection == "sales" and plan.group_by.startswith("items.")):
+            issues.append("Requested group_by field is not available in the collection.")
 
     if issues:
         available = ", ".join(collection_fields[:15])
@@ -227,6 +300,9 @@ def _normalize_plan(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> QueryPl
     if plan.action in {"sum", "top"} and not plan.field:
         plan.field = schema_snapshot.get("primary_field") or schema_snapshot.get("first_word")
 
+    if plan.action == "sum" and plan.group_by:
+        plan.action = "top"
+
     if plan.action == "top" and not plan.group_by:
         plan.group_by = schema_snapshot.get("primary_field") or schema_snapshot.get("first_word")
 
@@ -242,6 +318,85 @@ def _normalize_plan(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> QueryPl
                 cleaned.append(field_name)
         plan.fields = cleaned or None
 
+    # Recursively parse string dates to datetime objects in filter
+    if plan.filter:
+        plan.filter = convert_dates_in_filter(plan.filter)
+
+    plan = _ensure_numeric_field(plan, schema_snapshot)
+
+    return plan
+
+
+def _numeric_field_candidates(fields: List[str]) -> List[str]:
+    keywords = [
+        "amount",
+        "total",
+        "price",
+        "cost",
+        "value",
+        "balance",
+        "sales",
+        "revenue",
+        "qty",
+        "quantity",
+        "count",
+        "rate",
+        "score",
+        "rating",
+    ]
+    candidates: List[str] = []
+    for field in fields:
+        name = field.lower()
+        if any(keyword in name for keyword in keywords):
+            candidates.append(field)
+    return candidates
+
+
+def _ensure_numeric_field(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> QueryPlan:
+    if plan.action not in {"sum", "top"}:
+        return plan
+
+    if not plan.collection:
+        return plan
+
+    # Special handling for sales collection to allow nested fields
+    if plan.collection == "sales":
+        if plan.action == "sum":
+            if not plan.field:
+                plan.field = "items.price"
+            return plan
+        if plan.action == "top":
+            if not plan.field:
+                plan.field = "items.quantity"
+            if not plan.group_by:
+                plan.group_by = "items.name"
+            return plan
+
+    fields_by_collection = schema_snapshot.get("fields_by_collection") or {}
+    collection_fields = fields_by_collection.get(plan.collection) or []
+    if not collection_fields:
+        return plan
+
+    if plan.field and plan.field in collection_fields and plan.field != "_id":
+        return plan
+
+    candidates = _numeric_field_candidates(collection_fields)
+    if len(candidates) == 1:
+        plan.field = candidates[0]
+        return plan
+
+    if candidates:
+        plan.action = "clarify"
+        plan.clarification_question = (
+            "Which numeric field should I use for this total? Available: "
+            + ", ".join(candidates[:8])
+        )
+        return plan
+
+    plan.action = "clarify"
+    plan.clarification_question = (
+        "I could not find a numeric field for this total. Which field should I use?"
+    )
     return plan
 
 
@@ -294,6 +449,21 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
             return {"count": count}
 
         if plan.action == "sum":
+            if plan.collection == "sales":
+                pipeline = [
+                    {"$match": filter_doc},
+                    {"$unwind": "$items"},
+                    {"$project": {
+                        "item_total": {"$multiply": ["$items.quantity", {"$toDouble": "$items.price"}]}
+                    }},
+                    {"$group": {"_id": None, "total": {"$sum": "$item_total"}}}
+                ]
+                result = list(collection.aggregate(pipeline))
+                total = result[0]["total"] if result else 0
+                if isinstance(total, float):
+                    total = round(total, 2)
+                return {"total": total}
+
             if not plan.field:
                 return {"error": "Missing field for sum."}
             pipeline = [
@@ -307,12 +477,33 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
         if plan.action == "top":
             if not plan.field or not plan.group_by:
                 return {"error": "Missing field or group_by for top query."}
-            pipeline = [
-                {"$match": filter_doc},
-                {"$group": {"_id": f"${plan.group_by}", "total": {"$sum": f"${plan.field}"}}},
+            
+            pipeline = [{"$match": filter_doc}]
+            if plan.collection == "sales" and (plan.group_by.startswith("items.") or plan.field.startswith("items.")):
+                pipeline.append({"$unwind": "$items"})
+                
+            pipeline.append(
+                {"$group": {"_id": f"${plan.group_by}", "total": {"$sum": f"${plan.field}"}}}
+            )
+            pipeline.extend([
                 {"$sort": {"total": -1}},
                 {"$limit": plan.limit},
-            ]
+            ])
+
+            if plan.group_by == "itemId":
+                pipeline.extend([
+                    {"$addFields": {"itemObjId": {"$toObjectId": "$_id"}}},
+                    {"$lookup": {
+                        "from": "Item",
+                        "localField": "itemObjId",
+                        "foreignField": "_id",
+                        "as": "item_details"
+                    }},
+                    {"$unwind": {"path": "$item_details", "preserveNullAndEmptyArrays": True}},
+                    {"$addFields": {"_id": {"$ifNull": ["$item_details.name", "$_id"]}}},
+                    {"$project": {"item_details": 0, "itemObjId": 0}}
+                ])
+
             result = list(collection.aggregate(pipeline))
             return {"items": result}
 
