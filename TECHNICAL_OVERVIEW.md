@@ -10,6 +10,12 @@ This project is a FastAPI-based AI assistant that translates natural language qu
 - Safe query execution (limited results, field projection, redaction).
 - A human-friendly UI with hierarchical details lists (no raw JSON).
 - Deployment support for Render with Docker (Python 3.11) and health endpoints.
+- **Robust date parsing** for any input format and conversion to BSON dates.
+- **Collection guessing** updated for the dev6 schema (`Voucher` for sales, `Business` for customers, `ItemSummary`/`Item` for products).
+- **Lowercase enum enforcement** in prompts to avoid case‑sensitivity mismatches.
+- **$lookup aggregation** added in `_execute_plan` to resolve product names when grouping by `itemId`.
+- **Plan normalizer** now converts `sum` actions with a `group_by` into `top` actions, returning product names.
+- **Verified** correct answers for total sales, customer count, and top‑selling product.
 
 ## Tech Stack (What is used for what)
 - Python 3.11: runtime for the backend.
@@ -98,6 +104,8 @@ This project is a FastAPI-based AI assistant that translates natural language qu
 - Date-range aggregation and advanced filters are limited.
 - The LLM is asked to keep filters simple.
 - Field validation is based on a single sample document per collection.
+
+
 
 ## Files to Reference
 - app/main.py: API endpoints

@@ -223,6 +223,33 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
     return None
 
 
+def _question_wants_count(question: str) -> bool:
+    q = question.lower()
+    count_triggers = ["how many", "count", "number of", "total number", "total count"]
+    if not any(term in q for term in count_triggers):
+        return False
+    sum_indicators = [
+        "sum",
+        "total amount",
+        "total revenue",
+        "total sales",
+        "total value",
+        "average",
+        "avg",
+        "mean",
+        "top",
+        "highest",
+        "lowest",
+        "max",
+        "min",
+        "most",
+        "least",
+    ]
+    if any(term in q for term in sum_indicators):
+        return False
+    return True
+
+
 def _build_collection_choices(
     collections: List[str], preferred: Optional[str] = None
 ) -> List[str]:
@@ -624,6 +651,12 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
 
     for plan in plans:
         plan = _normalize_plan(plan, schema_snapshot)
+        if _question_wants_count(question) and plan.action not in {"count", "clarify"}:
+            plan.action = "count"
+            plan.field = None
+            plan.fields = None
+            plan.group_by = None
+            plan.sort = None
         plan, validation_issue = _validate_plan_fields(plan, schema_snapshot)
         if validation_issue:
             try:

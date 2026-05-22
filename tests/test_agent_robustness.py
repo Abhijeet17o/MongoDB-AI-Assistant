@@ -1,5 +1,12 @@
 import datetime as dt
-from app.agent import parse_date_string, convert_dates_in_filter, _guess_collection, QueryPlan, _normalize_plan
+from app.agent import (
+    parse_date_string,
+    convert_dates_in_filter,
+    _guess_collection,
+    _question_wants_count,
+    QueryPlan,
+    _normalize_plan,
+)
 
 
 def test_parse_date_string() -> None:
@@ -86,3 +93,10 @@ def test_guess_collection_improvements() -> None:
     # Wait, is that okay? Yes! If the user says "Which product", mapping to "products" is correct, and then the agent/planner or LLM will plan the query on "sales" if it determines the action is "top sales" or it will refine it!
     # Let's verify the exact match for "product":
     assert _guess_collection("Which product is cheapest?", collections) == "products"
+
+
+def test_question_wants_count() -> None:
+    assert _question_wants_count("what is voucher count in company") is True
+    assert _question_wants_count("how many customers do we have") is True
+    assert _question_wants_count("total sales last month") is False
+    assert _question_wants_count("top 5 customers by sales") is False

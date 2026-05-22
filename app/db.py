@@ -9,6 +9,7 @@ from .config import require_settings
 
 _client: MongoClient | None = None
 _schema_cache: Dict[str, Any] | None = None
+_FIELD_SAMPLE_SIZE = 20
 
 
 def get_client() -> MongoClient:
@@ -70,11 +71,11 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
         snapshot["collections"] = collections
         fields_by_collection: Dict[str, list[str]] = {}
         for name in collections:
-            sample = db[name].find_one()
-            if sample:
-                fields_by_collection[name] = list(sample.keys())
-            else:
-                fields_by_collection[name] = []
+            fields: set[str] = set()
+            # Sample multiple documents to avoid missing sparsely populated fields.
+            for doc in db[name].find().limit(_FIELD_SAMPLE_SIZE):
+                fields.update(doc.keys())
+            fields_by_collection[name] = sorted(fields)
         snapshot["fields_by_collection"] = fields_by_collection
         if collections:
             primary = collections[0]
