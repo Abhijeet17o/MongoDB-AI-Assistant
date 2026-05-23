@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Dict
 
+from bson import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConfigurationError, PyMongoError
 
@@ -10,6 +12,29 @@ from .config import require_settings
 _client: MongoClient | None = None
 _schema_cache: Dict[str, Any] | None = None
 _FIELD_SAMPLE_SIZE = 20
+_DOC_SAMPLE_SIZE = 3
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_serialize_value(v) for v in value]
+    return value
+
+
+def _redact_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    redacted: Dict[str, Any] = {}
+    for key, value in doc.items():
+        key_lower = key.lower()
+        if any(token in key_lower for token in ["password", "pass", "secret", "token", "apikey", "api_key", "hash"]):
+            continue
+        redacted[key] = value
+    return redacted
 
 
 def get_client() -> MongoClient:
@@ -48,6 +73,7 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
         "primary_field": None,
         "first_word": "",
         "fields_by_collection": {},
+        "sample_docs_by_collection": {},
         "error": None,
     }
 
@@ -70,13 +96,21 @@ def get_schema_snapshot(force_refresh: bool = False) -> Dict[str, Any]:
         collections.sort()
         snapshot["collections"] = collections
         fields_by_collection: Dict[str, list[str]] = {}
+        sample_docs_by_collection: Dict[str, list[Dict[str, Any]]] = {}
         for name in collections:
             fields: set[str] = set()
             # Sample multiple documents to avoid missing sparsely populated fields.
             for doc in db[name].find().limit(_FIELD_SAMPLE_SIZE):
                 fields.update(doc.keys())
             fields_by_collection[name] = sorted(fields)
+            sample_docs: list[Dict[str, Any]] = []
+            for doc in db[name].find().limit(_DOC_SAMPLE_SIZE):
+                safe_doc = _serialize_value(_redact_doc(doc))
+                if isinstance(safe_doc, dict):
+                    sample_docs.append(safe_doc)
+            sample_docs_by_collection[name] = sample_docs
         snapshot["fields_by_collection"] = fields_by_collection
+        snapshot["sample_docs_by_collection"] = sample_docs_by_collection
         if collections:
             primary = collections[0]
             snapshot["primary_collection"] = primary

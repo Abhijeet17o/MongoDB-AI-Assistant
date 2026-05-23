@@ -4,6 +4,7 @@ from app.agent import (
     convert_dates_in_filter,
     _guess_collection,
     _question_wants_count,
+    _validate_plan_fields,
     QueryPlan,
     _normalize_plan,
 )
@@ -100,3 +101,17 @@ def test_question_wants_count() -> None:
     assert _question_wants_count("how many customers do we have") is True
     assert _question_wants_count("total sales last month") is False
     assert _question_wants_count("top 5 customers by sales") is False
+
+
+def test_validate_plan_filter_fields() -> None:
+    snapshot = {
+        "fields_by_collection": {"Voucher": ["_id", "companyName", "voucherCode"]}
+    }
+    plan = QueryPlan(action="count", collection="Voucher", filter={"company": "ACME"})
+    _, issue = _validate_plan_fields(plan, snapshot)
+    assert issue is not None
+    assert "Filter fields are not available" in issue
+
+    plan_ok = QueryPlan(action="count", collection="Voucher", filter={"companyName": "ACME"})
+    _, issue_ok = _validate_plan_fields(plan_ok, snapshot)
+    assert issue_ok is None

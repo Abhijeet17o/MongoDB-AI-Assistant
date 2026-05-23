@@ -90,7 +90,8 @@ def _render_prompt(schema_snapshot: Dict[str, Any], question: str, parser: Pydan
         "- If preferred_collection is provided, use it. Otherwise use primary_collection.\n"
         "- Use first_word as a fallback field when a field is needed.\n"
         "- If the user asks for specific fields (e.g., title and plot), set fields accordingly.\n"
-        "- Use fields_by_collection to choose valid fields.\n"
+        "- Use fields_by_collection and sample_docs_by_collection to choose valid fields.\n"
+        "- Do not invent fields; rely on schema and samples.\n"
         "- Time context: The current real-world year is 2024. The database is actively updated.\n"
         "- Important: When planning queries with relative date filters (e.g., 'last month', 'this year', 'today'), assume the current date/time is 2024-03-01T00:00:00Z. For example:\n"
         "  - 'last month' means February 2024 (gte: '2024-02-01T00:00:00Z', lt: '2024-03-01T00:00:00Z')\n"
@@ -125,8 +126,11 @@ def _render_multi_prompt(
         "Schema snapshot: {schema_snapshot}\n"
         "Rules:\n"
         "- Use ONLY the collections listed in schema.\n"
-        "- Use fields_by_collection to choose valid fields.\n"
+        "- Use fields_by_collection and sample_docs_by_collection to choose valid fields.\n"
+        "- Do not invent fields; rely on schema and samples.\n"
         "- Keep limit <= 100.\n"
+        "- Use fields_by_collection and sample_docs_by_collection to choose valid fields.\n"
+        "- Do not invent fields; rely on schema and samples.\n"
         "- Return a JSON object matching the provided schema.\n"
         "- Time context: The current real-world year is 2024. The database is actively updated.\n"
         "- Important: When planning queries with relative date filters (e.g., 'last month', 'this year', 'today'), assume the current date/time is 2024-03-01T00:00:00Z. For example:\n"
@@ -250,6 +254,21 @@ def _question_wants_count(question: str) -> bool:
     return True
 
 
+def _collect_filter_fields(filter_obj: Any) -> List[str]:
+    fields: List[str] = []
+    if isinstance(filter_obj, dict):
+        for key, value in filter_obj.items():
+            if key.startswith("$"):
+                fields.extend(_collect_filter_fields(value))
+            else:
+                fields.append(key)
+                fields.extend(_collect_filter_fields(value))
+    elif isinstance(filter_obj, list):
+        for item in filter_obj:
+            fields.extend(_collect_filter_fields(item))
+    return fields
+
+
 def _build_collection_choices(
     collections: List[str], preferred: Optional[str] = None
 ) -> List[str]:
@@ -297,6 +316,22 @@ def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> T
     if plan.group_by and plan.group_by not in collection_fields:
         if not (plan.collection == "sales" and plan.group_by.startswith("items.")):
             issues.append("Requested group_by field is not available in the collection.")
+
+    if plan.filter:
+        raw_fields = _collect_filter_fields(plan.filter)
+        invalid_fields: List[str] = []
+        for field in raw_fields:
+            if field in collection_fields:
+                continue
+            if "." in field and field.split(".")[0] in collection_fields:
+                continue
+            invalid_fields.append(field)
+        if invalid_fields:
+            issues.append(
+                "Filter fields are not available in the collection: "
+                + ", ".join(sorted(set(invalid_fields))[:5])
+                + "."
+            )
 
     if issues:
         available = ", ".join(collection_fields[:15])
@@ -437,6 +472,20 @@ def _serialize_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_serialize_value(v) for v in value]
     return value
+
+
+def _plan_signature(plan: QueryPlan) -> str:
+    payload = {
+        "action": plan.action,
+        "collection": plan.collection,
+        "filter": _serialize_value(plan.filter) if plan.filter else None,
+        "fields": plan.fields,
+        "field": plan.field,
+        "group_by": plan.group_by,
+        "sort": plan.sort,
+        "limit": plan.limit,
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True)
 
 
 def _pick_display_field(items: List[Dict[str, Any]]) -> Optional[str]:
@@ -648,6 +697,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
 
     responses: List[str] = []
     results_payload: List[Dict[str, Any]] = []
+    seen_signatures: set[str] = set()
 
     for plan in plans:
         plan = _normalize_plan(plan, schema_snapshot)
@@ -683,6 +733,11 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
                 "choices": _build_collection_choices(collections, preferred),
                 "data": {"plan": plan.model_dump()},
             }
+
+        signature = _plan_signature(plan)
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
 
         result = _execute_plan(plan)
         needs_retry, issue = _needs_refinement(plan, result)
