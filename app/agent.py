@@ -219,6 +219,7 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
 
     # 2. Check synonyms & keyword mappings
     mapping = {
+                "Voucher": ["voucher", "voucher count", "voucher count in company", "voucher count value in company", "company voucher count"],
         "test view": ["voucher count in company", "count in company", "voucher count value in company", "company voucher count"],
         "company_data": ["company data", "items share", "vouchers share"],
         "company_shares": ["share", "business card share"],
@@ -245,10 +246,9 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
 
 def _question_wants_count(question: str) -> bool:
     q = question.lower()
-    # Explicitly avoid converting field names like "voucher count" to a db count count operation
-    if "voucher count" in q or "value" in q:
+    # Explicitly exclude queries that ask for voucher count, which refer to field values rather than document count
+    if "voucher count" in q:
         return False
-        
     count_triggers = ["how many", "number of", "total number", "total count", "count"]
     if not any(term in q for term in count_triggers):
         return False
@@ -363,6 +363,16 @@ def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> T
 
     issues: List[str] = []
     if plan.fields:
+        # Alias common field names to actual schema fields
+        alias_map = {"vouchercode": "voucherNo", "voucher_code": "voucherNo"}
+        aliased_fields = []
+        for f in plan.fields:
+            key = f.lower().replace(" ", "")
+            if key in alias_map:
+                aliased_fields.append(alias_map[key])
+            else:
+                aliased_fields.append(f)
+        plan.fields = aliased_fields
         valid_fields = [field for field in plan.fields if field in collection_fields]
         if not valid_fields:
             issues.append("Requested fields are not available in the collection.")
