@@ -97,8 +97,10 @@ def test_guess_collection_improvements() -> None:
 
 
 def test_question_wants_count() -> None:
-    assert _question_wants_count("what is voucher count in company") is True
+    # "voucher count" refers to the field values, so we test that it skips forcing the DB count.
+    assert _question_wants_count("what is voucher count in company") is False
     assert _question_wants_count("how many customers do we have") is True
+    assert _question_wants_count("count the number of companies") is True
     assert _question_wants_count("total sales last month") is False
     assert _question_wants_count("top 5 customers by sales") is False
 

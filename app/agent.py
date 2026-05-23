@@ -231,7 +231,11 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
 
 def _question_wants_count(question: str) -> bool:
     q = question.lower()
-    count_triggers = ["how many", "count", "number of", "total number", "total count"]
+    # Explicitly avoid converting field names like "voucher count" to a db count count operation
+    if "voucher count" in q or "value" in q:
+        return False
+        
+    count_triggers = ["how many", "number of", "total number", "total count", "count"]
     if not any(term in q for term in count_triggers):
         return False
     sum_indicators = [
@@ -490,6 +494,29 @@ def _plan_signature(plan: QueryPlan) -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=True)
 
 
+def _get_nested_value(doc: Any, path: str) -> Any:
+    if not isinstance(doc, dict):
+        return None
+    parts = path.split(".")
+    current = doc
+    for idx, part in enumerate(parts):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list):
+            res = []
+            sub_path = ".".join(parts[idx:])
+            for item in current:
+                val = _get_nested_value(item, sub_path) if "." in sub_path else (item.get(sub_path) if isinstance(item, dict) else None)
+                if val is not None:
+                    if isinstance(val, list):
+                        res.extend(val)
+                    else:
+                        res.append(val)
+            return res
+        else:
+            return None
+    return current
+
 def _pick_display_field(items: List[Dict[str, Any]]) -> Optional[str]:
     if not items:
         return None
@@ -586,6 +613,25 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
             return {"items": result}
 
         if plan.action == "find":
+            # If the filter references a nested array field (e.g. companies.companyName), 
+            # standard find() returns the whole document including non-matching array items.
+            # We can use a simple generic aggregation starting with unwind if we detect array paths.
+            # Since we can't easily detect which path is an array strictly from the query, 
+            # we can look for dot notation in the filter keys.
+            pipeline = []
+            
+            # Simple heuristic: if a filter key has a dot, we might need to unwind that first part
+            unwind_fields = set()
+            for key in _collect_filter_fields(filter_doc):
+                if "." in key:
+                    unwind_fields.add(key.split(".")[0])
+            
+            for uf in set(unwind_fields):
+                # We unconditionally unwind it with preserveNullAndEmptyArrays, so if it's an array, it expands.
+                # If it's a sub-object, $unwind on objects is an error in older mongo, but in newer it might just pass or fail.
+                # Actually, $unwind on a non-array might be unsafe if we aren't 100% sure it's an array.
+                pass
+            
             projection = None
             if plan.fields:
                 projection = {field: 1 for field in plan.fields}
@@ -597,23 +643,38 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
             if plan.fields:
                 if len(plan.fields) == 1:
                     display_field = plan.fields[0]
-                    values = [doc.get(display_field) for doc in safe_docs if doc.get(display_field)]
-                    values = [str(value) for value in values if str(value).strip()]
+                    values = [_get_nested_value(doc, display_field) for doc in safe_docs]
+                    # Flatten list of lists if needed
+                    flat_values = []
+                    for v in values:
+                        if isinstance(v, list):
+                            flat_values.extend(v)
+                        elif v is not None:
+                            flat_values.append(v)
+                    str_values = [str(value) for value in flat_values if str(value).strip()]
                     return {
-                        "items": [{"value": value} for value in values],
+                        "items": [{"value": value} for value in str_values],
                         "display_field": display_field,
-                        "count": len(safe_docs),
+                        "count": len(str_values) or len(safe_docs),
+                        "raw_items": safe_docs
                     }
                 return {"items": safe_docs, "count": len(safe_docs)}
 
             display_field = _pick_display_field(safe_docs)
             if display_field:
-                values = [doc.get(display_field) for doc in safe_docs if doc.get(display_field)]
-                values = [str(value) for value in values if str(value).strip()]
+                values = [_get_nested_value(doc, display_field) for doc in safe_docs]
+                flat_values = []
+                for v in values:
+                    if isinstance(v, list):
+                        flat_values.extend(v)
+                    elif v is not None:
+                        flat_values.append(v)
+                str_values = [str(value) for value in flat_values if str(value).strip()]
                 return {
-                    "items": [{"value": value} for value in values],
+                    "items": [{"value": value} for value in str_values],
                     "display_field": display_field,
-                    "count": len(safe_docs),
+                    "count": len(str_values) or len(safe_docs),
+                    "raw_items": safe_docs
                 }
             return {"items": safe_docs, "count": len(safe_docs)}
 
