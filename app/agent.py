@@ -211,9 +211,13 @@ def _call_llm(prompt: str) -> str:
 def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
     question_lower = question.lower()
     mapping = {
-        "Business": ["customer", "customers", "client", "business", "businesses"],
+        "test view": ["voucher count in company", "count in company", "voucher count value in company", "company voucher count"],
+        "company_data": ["company data", "items share", "vouchers share"],
+        "company_shares": ["share", "business card share"],
+        "company_business": ["company business", "business count"],
+        "Business": ["client", "business", "businesses"],
         "ItemSummary": ["sold the most", "top selling", "sold product", "product sold"],
-        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "voucher", "vouchers"],
+        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "voucher", "vouchers", "customer", "customers", "party"],
         "Item": ["product", "products", "item", "items"],
         "customers": ["customer", "customers"],
         "users": ["user", "users", "subscriber", "account"],
