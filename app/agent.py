@@ -667,13 +667,19 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
 
     collections = schema_snapshot.get("collections") or []
     preferred = collection_hint or _guess_collection(question, collections)
+    sample_collections = _build_collection_choices(collections, preferred)
+    prompt_snapshot = get_schema_snapshot(
+        include_samples=True,
+        sample_collections=sample_collections,
+    )
     if preferred:
         schema_snapshot = {**schema_snapshot, "preferred_collection": preferred}
+        prompt_snapshot = {**prompt_snapshot, "preferred_collection": preferred}
 
     plans: List[QueryPlan] = []
     try:
         parser = PydanticOutputParser(pydantic_object=MultiQueryPlan)
-        prompt = _render_multi_prompt(schema_snapshot, question, parser)
+        prompt = _render_multi_prompt(prompt_snapshot, question, parser)
         raw = _call_llm(prompt)
         multi = parser.parse(raw)
         plans = multi.plans
@@ -683,7 +689,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     if not plans:
         try:
             parser = PydanticOutputParser(pydantic_object=QueryPlan)
-            prompt = _render_prompt(schema_snapshot, question, parser)
+            prompt = _render_prompt(prompt_snapshot, question, parser)
             raw = _call_llm(prompt)
             plan = parser.parse(raw)
             plans = [plan]
@@ -712,7 +718,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
             try:
                 parser = PydanticOutputParser(pydantic_object=QueryPlan)
                 prompt = _render_refine_prompt(
-                    schema_snapshot,
+                    prompt_snapshot,
                     question,
                     parser,
                     plan.model_dump(),
@@ -745,7 +751,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
             try:
                 parser = PydanticOutputParser(pydantic_object=QueryPlan)
                 prompt = _render_refine_prompt(
-                    schema_snapshot,
+                    prompt_snapshot,
                     question,
                     parser,
                     plan.model_dump(),

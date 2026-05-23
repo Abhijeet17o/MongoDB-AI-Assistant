@@ -47,8 +47,16 @@ def health() -> dict:
 
 
 @app.get("/health/db")
-def health_db() -> dict:
-    return get_schema_snapshot(force_refresh=True)
+def health_db(details: bool = False, include_samples: bool = False) -> dict:
+    snapshot = get_schema_snapshot(force_refresh=True, include_samples=include_samples)
+    if details:
+        return snapshot
+    return {
+        "default_db": snapshot.get("default_db"),
+        "collections": snapshot.get("collections"),
+        "primary_collection": snapshot.get("primary_collection"),
+        "error": snapshot.get("error"),
+    }
 
 
 @app.get("/")
