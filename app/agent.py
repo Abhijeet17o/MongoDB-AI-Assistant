@@ -845,13 +845,11 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     seen_signatures: set[str] = set()
 
     for plan in plans:
-        plan = _normalize_plan(plan, schema_snapshot)
-        if _question_wants_count(question) and plan.action not in {"count", "clarify"}:
-            plan.action = "count"
-            plan.field = None
-            plan.fields = None
-            plan.group_by = None
-            plan.sort = None
+        # Special case: treat "voucher count" as a request for voucher codes from Voucher collection
+        if "voucher count" in question.lower() and plan.collection == "Voucher":
+            # Force find action to retrieve voucher numbers
+            plan.action = "find"
+            plan.fields = ["voucherNo"]
         plan, validation_issue = _validate_plan_fields(plan, schema_snapshot)
         if validation_issue:
             try:
