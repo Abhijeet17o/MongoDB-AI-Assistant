@@ -89,6 +89,7 @@ def _render_prompt(schema_snapshot: Dict[str, Any], question: str, parser: Pydan
         "- Keep limit <= 100.\n"
         "- If preferred_collection is provided, use it. Otherwise use primary_collection.\n"
         "- Entity Mapping: When filtering by abstract entities (like 'company', 'customer', 'vendor', 'name'), heavily rely on `sample_docs_by_collection` to locate the exact nested path (e.g., `party.name`). DO NOT assume names are stored at the top level unless the sample confirms it.\n"
+        "- Pre-calculated Aggregations: If the question asks for a specific metric's value like 'voucher count' and a collection (like `test view`) already contains exactly those fields (e.g., `companies.voucherCount`, `companies.companyName`), you MUST query that aggregate collection to retrieve the value directly rather than attempting to count raw relationships.\n"
         "- Robust Text Search: For text fields, names, or partial string matches, use the `$regex` operator with `$options: 'i'` instead of strict equality to handle differences in case and spacing.\n"
         "- Use first_word as a fallback field when a field is needed.\n"
         "- If the user asks for specific fields (e.g., title and plot), set fields accordingly.\n"
@@ -130,6 +131,7 @@ def _render_multi_prompt(
         "- Use ONLY the collections listed in schema.\n"
         "- Use fields_by_collection and sample_docs_by_collection to choose valid fields.\n"
         "- Entity Mapping: When filtering by abstract entities (like 'company', 'customer', 'vendor', 'name'), heavily rely on `sample_docs_by_collection` to locate the exact nested path (e.g., `party.name`). DO NOT assume names are stored at the top level unless the sample confirms it.\n"
+        "- Pre-calculated Aggregations: If the question asks for a specific metric's value like 'voucher count' and a collection (like `test view`) already contains exactly those fields (e.g., `companies.voucherCount`, `companies.companyName`), you MUST query that aggregate collection to retrieve the value directly rather than attempting to count raw relationships.\n"
         "- Robust Text Search: For text fields, names, or partial string matches, use the `$regex` operator with `$options: 'i'` instead of strict equality to handle differences in case and spacing.\n"
         "- Do not invent fields; rely on schema and samples.\n"
         "- Keep limit <= 100.\n"
@@ -625,19 +627,31 @@ def _execute_plan(plan: QueryPlan) -> Dict[str, Any]:
             for key in _collect_filter_fields(filter_doc):
                 if "." in key:
                     unwind_fields.add(key.split(".")[0])
+            for field in plan.fields or []:
+                if "." in field:
+                    unwind_fields.add(field.split(".")[0])
             
-            for uf in set(unwind_fields):
-                # We unconditionally unwind it with preserveNullAndEmptyArrays, so if it's an array, it expands.
-                # If it's a sub-object, $unwind on objects is an error in older mongo, but in newer it might just pass or fail.
-                # Actually, $unwind on a non-array might be unsafe if we aren't 100% sure it's an array.
-                pass
-            
-            projection = None
-            if plan.fields:
-                projection = {field: 1 for field in plan.fields}
-                if "_id" not in projection:
-                    projection["_id"] = 0
-            cursor = collection.find(filter_doc, projection).limit(plan.limit)
+            if unwind_fields:
+                for uf in unwind_fields:
+                    pipeline.append({"$unwind": {"path": f"${uf}", "preserveNullAndEmptyArrays": False}})
+                pipeline.append({"$match": filter_doc})
+                
+                projection = None
+                if plan.fields:
+                    projection = {field: 1 for field in plan.fields}
+                    if "_id" not in projection:
+                        projection["_id"] = 0
+                    pipeline.append({"$project": projection})
+                pipeline.append({"$limit": plan.limit})
+                cursor = collection.aggregate(pipeline)
+            else:
+                projection = None
+                if plan.fields:
+                    projection = {field: 1 for field in plan.fields}
+                    if "_id" not in projection:
+                        projection["_id"] = 0
+                cursor = collection.find(filter_doc, projection).limit(plan.limit)
+
             docs = [_serialize_value(doc) for doc in cursor]
             safe_docs = [_redact_doc(doc) for doc in docs if isinstance(doc, dict)]
             if plan.fields:
