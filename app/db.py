@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from bson import ObjectId
@@ -70,7 +72,34 @@ def _build_sample_docs(db, collection: str) -> List[Dict[str, Any]]:
     return sample_docs
 
 
+def _load_schema_from_file() -> Optional[Dict[str, Any]]:
+    try:
+        schema_path = Path(__file__).resolve().parent.parent / "db_schema.json"
+        if schema_path.exists():
+            with open(schema_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "collections" in data and "fields_by_collection" in data:
+                return data
+    except Exception as e:
+        print(f"Error loading db_schema.json: {e}")
+    return None
+
+
 def _build_base_snapshot() -> Dict[str, Any]:
+    file_schema = _load_schema_from_file()
+    if file_schema:
+        snapshot = {
+            "default_db": file_schema.get("default_db", ""),
+            "collections": file_schema.get("collections", []),
+            "primary_collection": file_schema.get("primary_collection"),
+            "primary_field": file_schema.get("primary_field"),
+            "first_word": file_schema.get("first_word", ""),
+            "fields_by_collection": file_schema.get("fields_by_collection", {}),
+            "sample_docs_by_collection": file_schema.get("sample_docs_by_collection", {}),
+            "error": None,
+        }
+        return snapshot
+
     snapshot: Dict[str, Any] = {
         "default_db": "",
         "collections": [],
@@ -168,13 +197,25 @@ def get_schema_snapshot(
         target_collections = [snapshot["primary_collection"]]
 
     sample_docs_by_collection: Dict[str, List[Dict[str, Any]]] = {}
-    try:
-        db = get_default_db()
-        for name in target_collections:
-            if name in snapshot.get("collections", []):
-                sample_docs_by_collection[name] = _build_sample_docs(db, name)
-    except PyMongoError as exc:
-        snapshot_with_samples["error"] = str(exc)
+    file_samples = snapshot.get("sample_docs_by_collection", {})
+    
+    # 1. First extract existing samples from the loaded file cache
+    for name in target_collections:
+        if name in file_samples:
+            sample_docs_by_collection[name] = file_samples[name]
+
+    # 2. For any remaining collections, dynamically query MongoDB if connected
+    remaining_collections = [name for name in target_collections if name not in sample_docs_by_collection]
+    if remaining_collections:
+        try:
+            db = get_default_db()
+            for name in remaining_collections:
+                if name in snapshot.get("collections", []):
+                    sample_docs_by_collection[name] = _build_sample_docs(db, name)
+        except Exception as exc:
+            # Fall back gracefully to whatever was loaded, do not fail completely
+            if not sample_docs_by_collection:
+                snapshot_with_samples["error"] = str(exc)
 
     snapshot_with_samples["sample_docs_by_collection"] = sample_docs_by_collection
     return snapshot_with_samples

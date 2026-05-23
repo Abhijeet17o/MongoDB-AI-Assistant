@@ -210,6 +210,14 @@ def _call_llm(prompt: str) -> str:
 
 def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
     question_lower = question.lower()
+    
+    # 1. Check direct matches against the collections in the actual schema (longer names first)
+    for coll in sorted(collections, key=len, reverse=True):
+        coll_lower = coll.lower()
+        if coll_lower in question_lower:
+            return coll
+
+    # 2. Check synonyms & keyword mappings
     mapping = {
         "test view": ["voucher count in company", "count in company", "voucher count value in company", "company voucher count"],
         "company_data": ["company data", "items share", "vouchers share"],
@@ -281,17 +289,57 @@ def _collect_filter_fields(filter_obj: Any) -> List[str]:
     return fields
 
 
+def _find_relevant_collections(question: str, collections: List[str]) -> List[str]:
+    question_lower = question.lower()
+    relevant: List[str] = []
+    
+    # 1. Direct collection name matching (case-insensitive)
+    for name in collections:
+        name_lower = name.lower()
+        if name_lower in question_lower:
+            relevant.append(name)
+            
+    # 2. Key-word / Synonym mapping
+    synonyms = {
+        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "invoice", "receipt"],
+        "Business": ["customer", "customers", "client", "clients", "vendor", "vendors", "party", "parties"],
+        "Item": ["product", "products", "item", "items", "material", "materials"],
+        "ItemSummary": ["summary", "sold", "selling", "top product", "top items"],
+        "IUser": ["user", "users", "member", "members"],
+        "Account": ["balance", "debit", "credit", "ledger", "account", "accounts"],
+        "IBranch": ["branch", "branches", "location", "locations"],
+        "ICompany": ["company", "companies", "firm", "firms", "organization"],
+        "Contact": ["phone", "email", "contact", "contacts"],
+    }
+    
+    for name, keywords in synonyms.items():
+        if name in collections and name not in relevant:
+            if any(kw in question_lower for kw in keywords):
+                relevant.append(name)
+                
+    return relevant
+
+
 def _build_collection_choices(
-    collections: List[str], preferred: Optional[str] = None
+    collections: List[str], preferred: Optional[str] = None, question: Optional[str] = None
 ) -> List[str]:
     choices: List[str] = []
     if preferred:
         choices.append(preferred)
+        
+    if question:
+        relevant = _find_relevant_collections(question, collections)
+        for name in relevant:
+            if name not in choices:
+                choices.append(name)
+                
+    # Pad to ensure we have at least 5 collections if possible, keeping it diverse but focused
     for name in collections:
+        if len(choices) >= 5:
+            break
         if name not in choices:
             choices.append(name)
-        if len(choices) >= 3:
-            break
+            
     return choices
 
 
@@ -739,7 +787,7 @@ def _format_response(plan: QueryPlan, result: Dict[str, Any]) -> str:
 
 def answer_question(question: str, collection_hint: Optional[str] = None) -> Dict[str, Any]:
     schema_snapshot = get_schema_snapshot()
-    if schema_snapshot.get("error"):
+    if schema_snapshot.get("error") and not schema_snapshot.get("collections"):
         return {
             "answer": "Database connection failed. Please check network access and MongoDB IP allowlist.",
             "needs_clarification": True,
@@ -748,7 +796,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
 
     collections = schema_snapshot.get("collections") or []
     preferred = collection_hint or _guess_collection(question, collections)
-    sample_collections = _build_collection_choices(collections, preferred)
+    sample_collections = _build_collection_choices(collections, preferred, question)
     prompt_snapshot = get_schema_snapshot(
         include_samples=True,
         sample_collections=sample_collections,
@@ -817,7 +865,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
             return {
                 "answer": plan.clarification_question or "Can you clarify your request?",
                 "needs_clarification": True,
-                "choices": _build_collection_choices(collections, preferred),
+                "choices": _build_collection_choices(collections, preferred, question),
                 "data": {"plan": plan.model_dump()},
             }
 
