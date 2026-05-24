@@ -245,10 +245,77 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
 
 
 def _question_wants_count(question: str) -> bool:
+    """Determine if a question is asking for a document count.
+
+    The logic prioritizes explicit count triggers (e.g., "how many", "count")
+    while allowing special cases like "voucher count" to be treated as a field request.
+    If no count trigger is found, we fall back to checking if any known schema field is mentioned,
+    which indicates the user is likely interested in field values rather than a count.
+    """
     q = question.lower()
-    # Explicitly exclude queries that ask for voucher count, which refer to field values rather than document count
+
+    # Explicit exception for "voucher count" – treat as a field request.
     if "voucher count" in q:
         return False
+
+    # Terms that indicate a counting request.
+    count_triggers = ["how many", "number of", "total number", "total count", "count"]
+    # Terms that indicate aggregation other than count (sum, avg, top, etc.).
+    sum_indicators = [
+        "sum",
+        "total amount",
+        "total revenue",
+        "total sales",
+        "total value",
+        "average",
+        "avg",
+        "mean",
+        "top",
+        "highest",
+        "lowest",
+        "max",
+        "min",
+        "most",
+        "least",
+    ]
+
+    # If any sum indicator is present, we do NOT want a count.
+    if any(term in q for term in sum_indicators):
+        return False
+
+    # If any count trigger is present, we want a count.
+    if any(term in q for term in count_triggers):
+        return True
+
+    # Fallback: check for known schema fields. If a field appears, it's likely a field request.
+    try:
+        schema_snapshot = get_schema_snapshot()
+        fields_by_collection = schema_snapshot.get("fields_by_collection") or {}
+        all_fields = {f.lower() for fields in fields_by_collection.values() for f in fields}
+        if any(field in q for field in all_fields):
+            return False
+    except Exception:
+        pass
+
+    # Default to not a count request.
+    return False
+    q = question.lower()
+    # If the question mentions any known field name, treat it as a field request rather than a count.
+    try:
+        schema_snapshot = get_schema_snapshot()
+        fields_by_collection = schema_snapshot.get("fields_by_collection") or {}
+        # Build a set of all field names in lowercase for quick lookup.
+        all_fields = {f.lower() for fields in fields_by_collection.values() for f in fields}
+        if any(field in q for field in all_fields):
+            return False
+    except Exception:
+        # If schema retrieval fails, fall back to original heuristics.
+        pass
+
+    # Explicitly exclude queries that ask for "voucher count" which refer to field values rather than document count.
+    if "voucher count" in q:
+        return False
+
     count_triggers = ["how many", "number of", "total number", "total count", "count"]
     if not any(term in q for term in count_triggers):
         return False
@@ -272,6 +339,7 @@ def _question_wants_count(question: str) -> bool:
     if any(term in q for term in sum_indicators):
         return False
     return True
+
 
 
 def _collect_filter_fields(filter_obj: Any) -> List[str]:
@@ -845,11 +913,6 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     seen_signatures: set[str] = set()
 
     for plan in plans:
-        # Special case: treat "voucher count" as a request for voucher codes from Voucher collection
-        if "voucher count" in question.lower() and plan.collection == "Voucher":
-            # Force find action to retrieve voucher numbers
-            plan.action = "find"
-            plan.fields = ["voucherNo"]
         plan, validation_issue = _validate_plan_fields(plan, schema_snapshot)
         if validation_issue:
             try:
