@@ -369,7 +369,7 @@ def _find_relevant_collections(question: str, collections: List[str]) -> List[st
             
     # 2. Key-word / Synonym mapping
     synonyms = {
-        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "invoice", "receipt"],
+        "voucher_count": ["voucher count", "vouchercount", "voucher_count"],
         "Business": ["customer", "customers", "client", "clients", "vendor", "vendors", "party", "parties"],
         "Item": ["product", "products", "item", "items", "material", "materials"],
         "ItemSummary": ["summary", "sold", "selling", "top product", "top items"],
@@ -432,7 +432,7 @@ def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> T
     issues: List[str] = []
     if plan.fields:
         # Alias common field names to actual schema fields
-        alias_map = {"vouchercode": "voucherNo", "voucher_code": "voucherNo"}
+        alias_map = {"vouchercode": "voucherNo", "voucher_code": "voucherNo", "voucher count": "vouchercount"}
         aliased_fields = []
         for f in plan.fields:
             key = f.lower().replace(" ", "")
