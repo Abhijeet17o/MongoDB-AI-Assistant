@@ -19,6 +19,11 @@ DATE_PATTERN = re.compile(
     r'^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$'
 )
 
+_NORMALIZE_SPACE_RE = re.compile(r"\s+")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_NON_ALNUM_RE = re.compile(r"[^a-zA-Z0-9 ]+")
+_COUNT_FIELD_CACHE: List[Tuple[str, str]] | None = None
+
 def parse_date_string(val: str) -> Optional[dt.datetime]:
     if not isinstance(val, str):
         return None
@@ -59,6 +64,106 @@ def convert_dates_in_filter(filter_obj: Any) -> Any:
         return filter_obj
     else:
         return filter_obj
+
+
+def _normalize_text(value: str) -> str:
+    if not value:
+        return ""
+    value = _CAMEL_SPLIT_RE.sub(" ", value)
+    value = value.replace(".", " ").replace("_", " ").replace("-", " ")
+    value = _NON_ALNUM_RE.sub(" ", value)
+    value = value.lower()
+    return _NORMALIZE_SPACE_RE.sub(" ", value).strip()
+
+
+def _iter_sample_field_paths(value: Any, prefix: str, depth: int, max_depth: int) -> List[str]:
+    if depth > max_depth:
+        return []
+    paths: List[str] = []
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            path = f"{prefix}.{key}" if prefix else key
+            paths.append(path)
+            paths.extend(_iter_sample_field_paths(entry, path, depth + 1, max_depth))
+    elif isinstance(value, list):
+        for item in value[:3]:
+            paths.extend(_iter_sample_field_paths(item, prefix, depth + 1, max_depth))
+    return paths
+
+
+def _collect_count_field_candidates(schema_snapshot: Dict[str, Any]) -> List[Tuple[str, str]]:
+    global _COUNT_FIELD_CACHE
+    if _COUNT_FIELD_CACHE is not None:
+        return _COUNT_FIELD_CACHE
+
+    fields_by_collection = schema_snapshot.get("fields_by_collection") or {}
+    sample_docs_by_collection = schema_snapshot.get("sample_docs_by_collection") or {}
+
+    candidates: List[Tuple[str, str]] = []
+    for collection, fields in fields_by_collection.items():
+        for field in fields:
+            if "count" in field.lower():
+                candidates.append((collection, field))
+
+    for collection, docs in sample_docs_by_collection.items():
+        for doc in docs or []:
+            for path in _iter_sample_field_paths(doc, "", 0, 3):
+                if "count" in path.lower():
+                    candidates.append((collection, path))
+
+    # Deduplicate while preserving order.
+    seen: set[Tuple[str, str]] = set()
+    unique: List[Tuple[str, str]] = []
+    for entry in candidates:
+        if entry in seen:
+            continue
+        seen.add(entry)
+        unique.append(entry)
+    _COUNT_FIELD_CACHE = unique
+    return unique
+
+
+def _field_variants(field_path: str) -> List[str]:
+    variants: List[str] = []
+    for candidate in {field_path, field_path.split(".")[-1]}:
+        normalized = _normalize_text(candidate)
+        if normalized:
+            variants.append(normalized)
+        if re.search(r"count", candidate, re.IGNORECASE):
+            spaced = re.sub(r"count", " count", candidate, flags=re.IGNORECASE)
+            spaced_norm = _normalize_text(spaced)
+            if spaced_norm:
+                variants.append(spaced_norm)
+    return list(dict.fromkeys(variants))
+
+
+def _find_count_field_hint(question: str, schema_snapshot: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    normalized_question = _normalize_text(question)
+    if "count" not in normalized_question:
+        return None
+
+    best: Optional[Tuple[int, str, str, str]] = None
+    for collection, field_path in _collect_count_field_candidates(schema_snapshot):
+        for variant in _field_variants(field_path):
+            if len(variant.split()) < 2:
+                continue
+            haystack = f" {normalized_question} "
+            needle = f" {variant} "
+            if needle in haystack:
+                score = len(variant)
+                if best is None or score > best[0]:
+                    best = (score, collection, field_path, variant)
+                break
+
+    if not best:
+        return None
+
+    _, collection, field_path, variant = best
+    return {
+        "collection": collection,
+        "field_path": field_path,
+        "match": variant,
+    }
 
 
 class QueryPlan(BaseModel):
@@ -210,6 +315,14 @@ def _call_llm(prompt: str) -> str:
 
 def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
     question_lower = question.lower()
+
+    if "voucher count" in question_lower:
+        if "test view" in collections and any(token in question_lower for token in ["company", "month", "year"]):
+            return "test view"
+        if "voucher_count" in collections:
+            return "voucher_count"
+        if "test view" in collections:
+            return "test view"
     
     # 1. Check direct matches against the collections in the actual schema (longer names first)
     for coll in sorted(collections, key=len, reverse=True):
@@ -219,8 +332,9 @@ def _guess_collection(question: str, collections: List[str]) -> Optional[str]:
 
     # 2. Check synonyms & keyword mappings
     mapping = {
-                "Voucher": ["voucher", "voucher count", "voucher count in company", "voucher count value in company", "company voucher count"],
         "test view": ["voucher count in company", "count in company", "voucher count value in company", "company voucher count"],
+        "voucher_count": ["voucher count", "vouchercount", "voucher_count"],
+        "Voucher": ["sale", "sales", "transaction", "transactions", "sold", "sell", "voucher", "vouchers", "customer", "customers", "party"],
         "company_data": ["company data", "items share", "vouchers share"],
         "company_shares": ["share", "business card share"],
         "company_business": ["company business", "business count"],
@@ -441,18 +555,29 @@ def _validate_plan_fields(plan: QueryPlan, schema_snapshot: Dict[str, Any]) -> T
             else:
                 aliased_fields.append(f)
         plan.fields = aliased_fields
-        valid_fields = [field for field in plan.fields if field in collection_fields]
+        valid_fields: List[str] = []
+        for field in plan.fields:
+            if field in collection_fields:
+                valid_fields.append(field)
+                continue
+            if "." in field and field.split(".")[0] in collection_fields:
+                valid_fields.append(field)
+                continue
         if not valid_fields:
             issues.append("Requested fields are not available in the collection.")
         else:
             plan.fields = valid_fields
 
     if plan.field and plan.field not in collection_fields:
-        if not (plan.collection == "sales" and plan.field.startswith("items.")):
+        if "." in plan.field and plan.field.split(".")[0] in collection_fields:
+            pass
+        elif not (plan.collection == "sales" and plan.field.startswith("items.")):
             issues.append("Requested field is not available in the collection.")
 
     if plan.group_by and plan.group_by not in collection_fields:
-        if not (plan.collection == "sales" and plan.group_by.startswith("items.")):
+        if "." in plan.group_by and plan.group_by.split(".")[0] in collection_fields:
+            pass
+        elif not (plan.collection == "sales" and plan.group_by.startswith("items.")):
             issues.append("Requested group_by field is not available in the collection.")
 
     if plan.filter:
@@ -872,8 +997,20 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
             "data": {"error": schema_snapshot["error"]},
         }
 
+    count_field_hint = _find_count_field_hint(question, schema_snapshot)
+    prompt_question = question
+    if count_field_hint:
+        prompt_question = (
+            f"{question}\n"
+            f"Note: '{count_field_hint['match']}' refers to the field "
+            f"'{count_field_hint['field_path']}' in collection '{count_field_hint['collection']}'. "
+            "Treat it as a field value, not a document count."
+        )
+
     collections = schema_snapshot.get("collections") or []
     preferred = collection_hint or _guess_collection(question, collections)
+    if not collection_hint and count_field_hint:
+        preferred = count_field_hint["collection"]
     sample_collections = _build_collection_choices(collections, preferred, question)
     prompt_snapshot = get_schema_snapshot(
         include_samples=True,
@@ -886,7 +1023,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     plans: List[QueryPlan] = []
     try:
         parser = PydanticOutputParser(pydantic_object=MultiQueryPlan)
-        prompt = _render_multi_prompt(prompt_snapshot, question, parser)
+        prompt = _render_multi_prompt(prompt_snapshot, prompt_question, parser)
         raw = _call_llm(prompt)
         multi = parser.parse(raw)
         plans = multi.plans
@@ -896,7 +1033,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     if not plans:
         try:
             parser = PydanticOutputParser(pydantic_object=QueryPlan)
-            prompt = _render_prompt(prompt_snapshot, question, parser)
+            prompt = _render_prompt(prompt_snapshot, prompt_question, parser)
             raw = _call_llm(prompt)
             plan = parser.parse(raw)
             plans = [plan]
@@ -919,7 +1056,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
                 parser = PydanticOutputParser(pydantic_object=QueryPlan)
                 prompt = _render_refine_prompt(
                     prompt_snapshot,
-                    question,
+                    prompt_question,
                     parser,
                     plan.model_dump(),
                     validation_issue,
@@ -940,6 +1077,11 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
                 "data": {"plan": plan.model_dump()},
             }
 
+        if count_field_hint and plan.action == "count":
+            plan.action = "find"
+            plan.collection = count_field_hint["collection"]
+            plan.fields = [count_field_hint["field_path"]]
+
         signature = _plan_signature(plan)
         if signature in seen_signatures:
             continue
@@ -952,7 +1094,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
                 parser = PydanticOutputParser(pydantic_object=QueryPlan)
                 prompt = _render_refine_prompt(
                     prompt_snapshot,
-                    question,
+                    prompt_question,
                     parser,
                     plan.model_dump(),
                     issue,

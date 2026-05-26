@@ -1,4 +1,7 @@
 import datetime as dt
+import json
+
+from app import agent
 from app.agent import (
     parse_date_string,
     convert_dates_in_filter,
@@ -117,3 +120,65 @@ def test_validate_plan_filter_fields() -> None:
     plan_ok = QueryPlan(action="count", collection="Voucher", filter={"companyName": "ACME"})
     _, issue_ok = _validate_plan_fields(plan_ok, snapshot)
     assert issue_ok is None
+
+
+def test_voucher_count_prefers_test_view_find(monkeypatch) -> None:
+    schema_snapshot = {
+        "collections": ["test view", "Voucher"],
+        "primary_collection": "Voucher",
+        "primary_field": "_id",
+        "first_word": "_id",
+        "fields_by_collection": {
+            "test view": ["companies", "month", "year"],
+            "Voucher": ["_id", "voucherNo"],
+        },
+        "sample_docs_by_collection": {
+            "test view": [
+                {
+                    "companies": [
+                        {"companyName": "M/S DIPSHI - ESTIMATE", "voucherCount": 389}
+                    ],
+                    "year": 2023,
+                    "month": 12,
+                }
+            ]
+        },
+        "error": None,
+    }
+
+    def fake_get_schema_snapshot(*args, **kwargs):
+        return schema_snapshot
+
+    def fake_call_llm(prompt: str) -> str:
+        return json.dumps(
+            {
+                "plans": [
+                    {
+                        "action": "count",
+                        "collection": "Voucher",
+                        "filter": None,
+                        "fields": None,
+                        "field": None,
+                        "group_by": None,
+                        "sort": None,
+                        "limit": 20,
+                    }
+                ]
+            }
+        )
+
+    def fake_execute_plan(plan: QueryPlan):
+        return {"items": [{"value": 389}]}
+
+    monkeypatch.setattr(agent, "get_schema_snapshot", fake_get_schema_snapshot)
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(agent, "_execute_plan", fake_execute_plan)
+    monkeypatch.setattr(agent, "_COUNT_FIELD_CACHE", None)
+
+    response = agent.answer_question(
+        "voucher count for company M/S DIPSHI - ESTIMATE"
+    )
+    plan = response["data"]["plans"][0]
+    assert plan["action"] == "find"
+    assert plan["collection"] == "test view"
+    assert "companies.voucherCount" in (plan.get("fields") or [])
