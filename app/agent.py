@@ -204,6 +204,7 @@ def _build_count_field_plan(
         collection=collection,
         fields=fields,
         filter=filter_doc,
+        limit=20,
     )
 
 
@@ -1099,6 +1100,7 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
     seen_signatures: set[str] = set()
 
     for plan in plans:
+        plan = _normalize_plan(plan, schema_snapshot)
         plan, validation_issue = _validate_plan_fields(plan, schema_snapshot)
         if validation_issue:
             try:
