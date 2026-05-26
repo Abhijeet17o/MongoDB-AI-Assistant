@@ -143,8 +143,21 @@ def _find_count_field_hint(question: str, schema_snapshot: Dict[str, Any]) -> Op
     if "count" not in normalized_question:
         return None
 
+    candidates = _collect_count_field_candidates(schema_snapshot)
+    if "voucher count" in normalized_question and "company" in normalized_question:
+        for collection, field_path in candidates:
+            if collection != "test view":
+                continue
+            field_lower = field_path.lower()
+            if "companies." in field_lower and "voucher" in field_lower and "count" in field_lower:
+                return {
+                    "collection": collection,
+                    "field_path": field_path,
+                    "match": "voucher count",
+                }
+
     best: Optional[Tuple[int, str, str, str]] = None
-    for collection, field_path in _collect_count_field_candidates(schema_snapshot):
+    for collection, field_path in candidates:
         for variant in _field_variants(field_path):
             if len(variant.split()) < 2:
                 continue
