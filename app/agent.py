@@ -22,6 +22,7 @@ DATE_PATTERN = re.compile(
 _NORMALIZE_SPACE_RE = re.compile(r"\s+")
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALNUM_RE = re.compile(r"[^a-zA-Z0-9 ]+")
+_COMPANY_EXTRACT_RE = re.compile(r"\bcompany(?: name)?\b\s*[:=]?\s*(.+)", re.IGNORECASE)
 _COUNT_FIELD_CACHE: List[Tuple[str, str]] | None = None
 
 def parse_date_string(val: str) -> Optional[dt.datetime]:
@@ -164,6 +165,46 @@ def _find_count_field_hint(question: str, schema_snapshot: Dict[str, Any]) -> Op
         "field_path": field_path,
         "match": variant,
     }
+
+
+def _extract_company_name(question: str) -> Optional[str]:
+    match = _COMPANY_EXTRACT_RE.search(question)
+    if not match:
+        return None
+    name = match.group(1).strip()
+    name = name.strip(" .,")
+    return name or None
+
+
+def _build_count_field_plan(
+    question: str,
+    count_field_hint: Dict[str, str],
+) -> QueryPlan:
+    collection = count_field_hint["collection"]
+    field_path = count_field_hint["field_path"]
+    fields: List[str] = [field_path]
+    if collection == "test view" and field_path.startswith("companies."):
+        fields = ["companies.companyName", field_path, "year", "month"]
+
+    seen: set[str] = set()
+    fields = [field for field in fields if not (field in seen or seen.add(field))]
+
+    filter_doc = None
+    company_name = _extract_company_name(question)
+    if company_name and collection == "test view":
+        filter_doc = {
+            "companies.companyName": {
+                "$regex": re.escape(company_name),
+                "$options": "i",
+            }
+        }
+
+    return QueryPlan(
+        action="find",
+        collection=collection,
+        fields=fields,
+        filter=filter_doc,
+    )
 
 
 class QueryPlan(BaseModel):
@@ -1007,6 +1048,11 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
             "Treat it as a field value, not a document count."
         )
 
+    forced_plan = None
+    normalized_question = _normalize_text(question)
+    if count_field_hint and "voucher count" in normalized_question:
+        forced_plan = _build_count_field_plan(question, count_field_hint)
+
     collections = schema_snapshot.get("collections") or []
     preferred = collection_hint or _guess_collection(question, collections)
     if not collection_hint and count_field_hint:
@@ -1021,29 +1067,32 @@ def answer_question(question: str, collection_hint: Optional[str] = None) -> Dic
         prompt_snapshot = {**prompt_snapshot, "preferred_collection": preferred}
 
     plans: List[QueryPlan] = []
-    try:
-        parser = PydanticOutputParser(pydantic_object=MultiQueryPlan)
-        prompt = _render_multi_prompt(prompt_snapshot, prompt_question, parser)
-        raw = _call_llm(prompt)
-        multi = parser.parse(raw)
-        plans = multi.plans
-    except Exception:
-        plans = []
-
-    if not plans:
+    if forced_plan:
+        plans = [forced_plan]
+    else:
         try:
-            parser = PydanticOutputParser(pydantic_object=QueryPlan)
-            prompt = _render_prompt(prompt_snapshot, prompt_question, parser)
+            parser = PydanticOutputParser(pydantic_object=MultiQueryPlan)
+            prompt = _render_multi_prompt(prompt_snapshot, prompt_question, parser)
             raw = _call_llm(prompt)
-            plan = parser.parse(raw)
-            plans = [plan]
+            multi = parser.parse(raw)
+            plans = multi.plans
         except Exception:
-            plans = [
-                QueryPlan(
-                    action="clarify",
-                    clarification_question="I could not parse that. Can you rephrase or be more specific?",
-                )
-            ]
+            plans = []
+
+        if not plans:
+            try:
+                parser = PydanticOutputParser(pydantic_object=QueryPlan)
+                prompt = _render_prompt(prompt_snapshot, prompt_question, parser)
+                raw = _call_llm(prompt)
+                plan = parser.parse(raw)
+                plans = [plan]
+            except Exception:
+                plans = [
+                    QueryPlan(
+                        action="clarify",
+                        clarification_question="I could not parse that. Can you rephrase or be more specific?",
+                    )
+                ]
 
     responses: List[str] = []
     results_payload: List[Dict[str, Any]] = []

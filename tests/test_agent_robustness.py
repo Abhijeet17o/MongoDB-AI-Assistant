@@ -182,3 +182,5 @@ def test_voucher_count_prefers_test_view_find(monkeypatch) -> None:
     assert plan["action"] == "find"
     assert plan["collection"] == "test view"
     assert "companies.voucherCount" in (plan.get("fields") or [])
+    filter_doc = plan.get("filter") or {}
+    assert "companies.companyName" in filter_doc
